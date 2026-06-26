@@ -25,18 +25,33 @@ export default function Home() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ url }),
+        signal: AbortSignal.timeout(15000)
       });
 
-      const data = await response.json();
-
       if (!response.ok) {
-        throw new Error(data.error || 'Failed to extract media. Please try again.');
+        let errorMessage = 'Failed to extract media. Please try again.';
+        try {
+          const data = await response.json();
+          errorMessage = data.error || errorMessage;
+        } catch (_) {
+          if (response.status === 504 || response.status === 502) {
+            errorMessage = 'The download service took too long to respond. Please try again or try another link.';
+          } else {
+            errorMessage = `Media extraction failed (Status ${response.status}).`;
+          }
+        }
+        throw new Error(errorMessage);
       }
 
+      const data = await response.json();
       setResult(data);
     } catch (err: any) {
       console.error("Extraction error:", err);
-      setError(err.message || 'An error occurred while processing the request.');
+      if (err.name === 'AbortError') {
+        setError('The request timed out. Please try again.');
+      } else {
+        setError(err.message || 'An error occurred while processing the request.');
+      }
     } finally {
       setIsLoading(false);
     }

@@ -58,6 +58,7 @@ export default function DownloaderForm({ onSubmit, isLoading, onClear, hasResult
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) return;
     if (!url.trim()) return;
     
     if (validationError) {

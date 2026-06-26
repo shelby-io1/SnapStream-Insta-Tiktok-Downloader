@@ -1,8 +1,57 @@
 import { NextResponse } from 'next/server';
-import { igdl } from 'btch-downloader';
+import { igdl, ttdl } from 'btch-downloader';
+import { createHash } from 'crypto';
+
+function withTimeout<T>(promise: Promise<T>, ms: number, errorMsg: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      const id = setTimeout(() => {
+        clearTimeout(id);
+        reject(new Error(errorMsg));
+      }, ms);
+    })
+  ]);
+}
+
+// Server-side sliding-window rate limit store using client IP hashes
+const rateLimitStore = new Map<string, { count: number; resetTime: number }>();
+
+function handleRateLimit(ip: string): { limited: boolean; remaining: number } {
+  const now = Date.now();
+  const LIMIT = 20; // Max 20 requests per hour
+  const WINDOW_MS = 60 * 60 * 1000; // 1 hour window
+
+  const ipHash = createHash('sha256').update(ip).digest('hex');
+  const record = rateLimitStore.get(ipHash);
+
+  if (!record) {
+    rateLimitStore.set(ipHash, { count: 1, resetTime: now + WINDOW_MS });
+    return { limited: false, remaining: LIMIT - 1 };
+  }
+
+  if (now > record.resetTime) {
+    rateLimitStore.set(ipHash, { count: 1, resetTime: now + WINDOW_MS });
+    return { limited: false, remaining: LIMIT - 1 };
+  }
+
+  if (record.count >= LIMIT) {
+    return { limited: true, remaining: 0 };
+  }
+
+  record.count += 1;
+  return { limited: false, remaining: LIMIT - record.count };
+}
 
 export async function POST(req: Request) {
   try {
+    // 1. Rate Limiting Check (Server-side IP hashing)
+    const ip = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || '127.0.0.1';
+    const rateLimit = handleRateLimit(ip);
+    if (rateLimit.limited) {
+      return NextResponse.json({ error: 'Too many requests. Please try again in an hour.' }, { status: 429 });
+    }
+
     const { url } = await req.json();
 
     if (!url || typeof url !== 'string') {
@@ -11,13 +60,23 @@ export async function POST(req: Request) {
 
     const cleanUrl = url.trim();
 
-    // 1. Check for TikTok URL
-    if (
-      cleanUrl.includes('tiktok.com') ||
-      cleanUrl.includes('vt.tiktok.com') ||
-      cleanUrl.includes('vm.tiktok.com')
-    ) {
+    // 2. Input Length Sanitization
+    if (cleanUrl.length > 1000) {
+      return NextResponse.json({ error: 'URL is too long. Limit is 1000 characters.' }, { status: 400 });
+    }
+
+    // 3. Strict Domain Formatting Regex
+    const isTikTok = /^(https?:\/\/)?([a-z0-9-]+\.)?(tiktok\.com)\/[A-Za-z0-9_.\-\/@%]+(\?[^"'\s<>]*)?$/i.test(cleanUrl);
+    const isInstagram = /^(https?:\/\/)?([a-z0-9-]+\.)?(instagram\.com|instagr\.am)\/[A-Za-z0-9_.\-\/@%]+(\?[^"'\s<>]*)?$/i.test(cleanUrl);
+
+    if (!isTikTok && !isInstagram) {
+      return NextResponse.json({ error: 'Invalid URL format. Only valid TikTok and Instagram links are allowed.' }, { status: 400 });
+    }
+
+    // 4. Check for TikTok URL
+    if (isTikTok) {
       try {
+        // Try TikWM first with a timeout
         const res = await fetch("https://www.tikwm.com/api/", {
           method: "POST",
           headers: {
@@ -28,7 +87,8 @@ export async function POST(req: Request) {
             url: cleanUrl,
             web: "1",
             hd: "1"
-          })
+          }),
+          signal: AbortSignal.timeout(6000)
         });
 
         if (!res.ok) {
@@ -78,8 +138,46 @@ export async function POST(req: Request) {
           }
         });
       } catch (err: any) {
-        console.error("TikTok download error:", err);
-        return NextResponse.json({ error: err.message || "Failed to download TikTok video" }, { status: 500 });
+        console.warn("TikWM failed or timed out, trying fallback ttdl...", err);
+        try {
+          // Fallback: Try btch-downloader ttdl with a timeout
+          const data = await withTimeout(ttdl(cleanUrl), 6000, "Fallback TikTok extraction timed out");
+          if (!data || !data.status || (!data.video && !data.audio)) {
+            throw new Error(data?.message || "Failed to parse TikTok video via fallback");
+          }
+
+          return NextResponse.json({
+            platform: 'tiktok',
+            success: true,
+            id: 'download',
+            title: data.title || "TikTok Video",
+            duration: 0,
+            cover: data.thumbnail || "",
+            videoUrl: data.video?.[0] || "",
+            videoUrlWatermark: "",
+            videoUrlHD: data.video?.[0] || "",
+            images: [],
+            music: {
+              title: data.title_audio || "Original Sound",
+              author: "",
+              playUrl: data.audio?.[0] || ""
+            },
+            author: {
+              username: "tiktok_user",
+              nickname: "TikTok User",
+              avatar: ""
+            },
+            stats: {
+              plays: 0,
+              likes: 0,
+              comments: 0,
+              shares: 0
+            }
+          });
+        } catch (fallbackErr: any) {
+          console.error("TikTok download error (primary and fallback failed):", fallbackErr);
+          return NextResponse.json({ error: fallbackErr.message || "Failed to download TikTok video" }, { status: 500 });
+        }
       }
     }
 
@@ -89,7 +187,7 @@ export async function POST(req: Request) {
       cleanUrl.includes('instagr.am')
     ) {
       try {
-        const results = await igdl(cleanUrl);
+        const results = await withTimeout(igdl(cleanUrl), 8000, "Instagram media extraction timed out. Please try again.");
         if (!results) {
           throw new Error("No media found. Make sure it is a public post/reel.");
         }
