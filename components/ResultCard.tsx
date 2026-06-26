@@ -17,29 +17,19 @@ export default function ResultCard({ result, onReset }: ResultCardProps) {
 
   const { platform, id, title, cover, author, stats, music, videoUrl, videoUrlWatermark, videoUrlHD, images, media } = result;
 
-  const handleDownload = async (url: string, filename: string) => {
+  const handleDownload = (url: string, filename: string) => {
     setDownloadingUrl(url);
-    try {
-      // Fetch the file through our server-side API proxy to bypass browser CORS restrictions
-      const proxyUrl = `/api/download/file?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
-      const response = await fetch(proxyUrl);
-      if (!response.ok) throw new Error("Network response was not ok");
-      const blob = await response.blob();
-      const blobUrl = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = blobUrl;
-      link.download = filename;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(blobUrl);
-    } catch (error) {
-      console.warn("Proxy download failed. Falling back to opening URL directly.", error);
-      // Fallback: Open in new tab so user can right-click and save
-      window.open(url, '_blank', 'noopener,noreferrer');
-    } finally {
+    
+    // Generate the proxy URL that forces file download headers
+    const proxyUrl = `/api/download/file?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(filename)}`;
+    
+    // Trigger native browser download by opening proxy URL in a new window/tab
+    window.open(proxyUrl, '_blank');
+    
+    // Reset loading state after 1.5 seconds (gives user visual feedback of click trigger)
+    setTimeout(() => {
       setDownloadingUrl(null);
-    }
+    }, 1500);
   };
 
   const isTikTok = platform === 'tiktok';
