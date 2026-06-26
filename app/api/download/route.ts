@@ -187,76 +187,26 @@ export async function POST(req: Request) {
       cleanUrl.includes('instagr.am')
     ) {
       try {
-        const results = await withTimeout(igdl(cleanUrl), 8000, "Instagram media extraction timed out. Please try again.");
-        if (!results) {
-          throw new Error("No media found. Make sure it is a public post/reel.");
+        const { snapsave } = await import('snapsave-media-downloader');
+        const result = await withTimeout(
+          snapsave(cleanUrl),
+          12000,
+          "Instagram media extraction timed out. Please try again."
+        );
+
+        const data = result?.data;
+        if (!result || !result.success || !data || !data.media || data.media.length === 0) {
+          throw new Error(result?.message || "No media found. Make sure it is a public post/reel.");
         }
 
         // Standardize result
-        let media: any[] = [];
-        const checkIsVideo = (mediaUrl: string) => {
-          if (!mediaUrl) return false;
-          if (
-            cleanUrl.includes('/reel/') || 
-            cleanUrl.includes('/reels/') || 
-            cleanUrl.includes('/tv/')
-          ) {
-            return true;
-          }
-          const lowUrl = mediaUrl.toLowerCase();
-          if (lowUrl.includes('.mp4')) return true;
-          if (lowUrl.includes('/t50.') || lowUrl.includes('/v/t50.')) return true;
-          if (lowUrl.includes('/t58.') || lowUrl.includes('/v/t58.')) return true;
-          if (lowUrl.includes('/v/') && (lowUrl.includes('fbcdn.net') || lowUrl.includes('cdninstagram.com'))) {
-            if (!lowUrl.includes('/t51.') && !lowUrl.includes('/t53.') && !lowUrl.includes('/t55.')) {
-              return true;
-            }
-          }
-          return false;
-        };
-
-        if (Array.isArray(results)) {
-          media = results.map(item => {
-            if (typeof item === 'string') {
-              return { url: item, type: checkIsVideo(item) ? 'video' : 'image' };
-            } else if (item && typeof item === 'object') {
-              const link = item.url || item.downloadUrl || item.link || item.thumbnail;
-              return {
-                url: link,
-                type: (item.type === 'video' || checkIsVideo(link) || checkIsVideo(item.url)) ? 'video' : 'image',
-                thumbnail: item.thumbnail || item.preview || link
-              };
-            }
-            return null;
-          }).filter(Boolean);
-        } else if (typeof results === 'object') {
-          const resData = (results as any).result || (results as any).data || results;
-          if (Array.isArray(resData)) {
-            media = resData.map(item => {
-              if (typeof item === 'string') {
-                return { url: item, type: checkIsVideo(item) ? 'video' : 'image' };
-              } else {
-                const link = item.url || item.downloadUrl || item.link;
-                return {
-                  url: link,
-                  type: (item.type === 'video' || checkIsVideo(link)) ? 'video' : 'image',
-                  thumbnail: item.thumbnail || item.preview || link
-                };
-              }
-            });
-          } else if (typeof resData === 'string') {
-            media = [{ url: resData, type: checkIsVideo(resData) ? 'video' : 'image' }];
-          } else {
-            const link = resData.url || resData.downloadUrl || resData.link;
-            if (link) {
-              media = [{
-                url: link,
-                type: (resData.type === 'video' || checkIsVideo(link)) ? 'video' : 'image',
-                thumbnail: resData.thumbnail || resData.preview || link
-              }];
-            }
-          }
-        }
+        const media = data.media.map((item: any) => {
+          return {
+            url: item.url,
+            type: item.type || 'video',
+            thumbnail: item.thumbnail || data.preview || item.url
+          };
+        }).filter((item: any) => item.url);
 
         if (media.length === 0) {
           throw new Error("Failed to extract any download links from this Instagram URL. Make sure it is a public reel or post.");
@@ -275,8 +225,8 @@ export async function POST(req: Request) {
         return NextResponse.json({
           platform: 'instagram',
           success: true,
-          title: "Instagram Post",
-          cover: media[0].thumbnail || media[0].url,
+          title: data.description || "Instagram Post",
+          cover: data.preview || media[0].thumbnail || media[0].url,
           media: media, // Array of { url: string, type: 'video' | 'image', thumbnail?: string }
           author: {
             username: parsedUsername,

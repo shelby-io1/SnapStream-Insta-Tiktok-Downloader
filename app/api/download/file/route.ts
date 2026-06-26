@@ -7,7 +7,13 @@ const ALLOWED_CDN_DOMAINS = [
   'tiktokcdn.com',
   'tiktokcdn-us.com',
   'ibyteimg.com',
-  'tikwm.com'
+  'tikwm.com',
+  'rapidcdn.app',
+  'snapinsta.app',
+  'snapsave.app',
+  'snaptik.app',
+  'instagram.com',
+  'tiktok.com'
 ];
 
 function isSafeUrl(urlStr: string): boolean {
